@@ -8,7 +8,9 @@ import {
 } from "@/app/components/MainPostCard";
 import FixedWidthPostCard from "@/app/components/FixedWidthPostCard";
 import PopularPostCard from "@/app/components/PopularPostCard";
-import dummyPosts from "@/data/dummyPosts.json";
+import { useAuth } from "@/app/utils/providers";
+import { useSession } from "next-auth/react";
+import { communityService } from "@/app/services/community/community.service";
 
 // 배너 데이터
 const bannerData = [
@@ -43,56 +45,78 @@ export default function LoLMainPage() {
     const [controversialPosts, setControversialPosts] = useState([]);
     const [deadlinePosts, setDeadlinePosts] = useState([]);
     const [recentPosts, setRecentPosts] = useState([]);
+    const [userPosts, setUserPosts] = useState([]);
+    const [allUserPosts, setAllUserPosts] = useState([]);
+    const { user } = useAuth();
+    const { data: session } = useSession();
 
     useEffect(() => {
-        // 더미 데이터에서 LoL 게시물만 필터링
-        const lolPosts = dummyPosts.posts.filter(
-            (post) => post.gameType === "lol"
-        );
-        console.log("LoL 게시물:", lolPosts); // 데이터 확인용 로그
+        const loadPosts = async () => {
+            try {
+                // Firebase에서 실제 게시물 조회
+                const popularResult = await communityService.getPosts('lol', [], '', 1, 10, 'popular');
+                const recentResult = await communityService.getPosts('lol', [], '', 1, 10, 'recent');
+                
+                // 인기 게시물 (가중치 기반 정렬)
+                const popular = communityService.sortPosts(popularResult.posts, 'popular').slice(0, 3);
+                setPopularPosts(popular);
 
-        // 인기 게시물 (votes 기준 내림차순)
-        const popular = [...lolPosts]
-            .sort((a, b) => b.votes - a.votes)
-            .slice(0, 3);
-        setPopularPosts(popular);
-        console.log("인기 게시물:", popular); // 데이터 확인용 로그
+                // 최신 게시물 (최신순 정렬)
+                const recent = communityService.sortPosts(recentResult.posts, 'recent').slice(0, 3);
+                setRecentPosts(recent);
 
-        // 분쟁 활발 게시물 (투표 비율이 비슷한 순)
-        const controversial = [...lolPosts]
-            .filter((post) => post.voteCounts)
-            .sort((a, b) => {
-                const ratioA = Math.abs(
-                    a.voteCounts.option1 /
-                        (a.voteCounts.option1 + a.voteCounts.option2) -
-                        0.5
-                );
-                const ratioB = Math.abs(
-                    b.voteCounts.option1 /
-                        (b.voteCounts.option1 + b.voteCounts.option2) -
-                        0.5
-                );
-                return ratioA - ratioB;
-            })
-            .slice(0, 1);
-        setControversialPosts(controversial);
-        console.log("분쟁 활발:", controversial); // 데이터 확인용 로그
+                // 분쟁 활발 게시물 조회
+                const controversial = await communityService.getControversialPosts('lol', 1);
+                setControversialPosts(controversial);
 
-        // 마감 임박 게시물
-        const deadline = [...lolPosts]
-            .filter((post) => post.voteEndTime)
-            .sort((a, b) => new Date(a.voteEndTime) - new Date(b.voteEndTime))
-            .slice(0, 1);
-        setDeadlinePosts(deadline);
-        console.log("마감 임박:", deadline); // 데이터 확인용 로그
+                // 마감 임박 게시물은 빈 상태로 설정 (투표 기능 구현 후 추가 예정)
+                setDeadlinePosts([]);
 
-        // 최신 게시물
-        const recent = [...lolPosts]
-            .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-            .slice(0, 3);
-        setRecentPosts(recent);
-        console.log("최신 게시물:", recent); // 데이터 확인용 로그
+                console.log("인기 게시물:", popular);
+                console.log("최신 게시물:", recent);
+            } catch (error) {
+                console.error('게시물 로드 실패:', error);
+                // 에러 발생 시 빈 배열로 설정
+                setPopularPosts([]);
+                setRecentPosts([]);
+                setControversialPosts([]);
+                setDeadlinePosts([]);
+            }
+        };
+
+        loadPosts();
     }, []);
+
+    // 사용자 게시물 로드
+    useEffect(() => {
+        const loadUserPosts = async () => {
+            if ((user && user.uid) || (session && session.user)) {
+                const currentUserId = user?.uid || session?.user?.id;
+                try {
+                    const result = await communityService.getUserPosts('lol', currentUserId, 3);
+                    setUserPosts(result.posts);
+                    
+                    // 모든 게임의 사용자 게시물도 로드
+                    const allResult = await communityService.getAllUserPosts(currentUserId, 5);
+                    setAllUserPosts(allResult.posts);
+                    
+                    console.log("사용자 게시물:", result.posts);
+                    console.log("전체 사용자 게시물:", allResult.posts);
+                } catch (error) {
+                    console.error("사용자 게시물 로드 실패:", error);
+                    // 에러 발생 시 빈 배열로 설정하여 UI 오류 방지
+                    setUserPosts([]);
+                    setAllUserPosts([]);
+                }
+            } else {
+                // 사용자가 로그인하지 않은 경우 빈 배열로 설정
+                setUserPosts([]);
+                setAllUserPosts([]);
+            }
+        };
+
+        loadUserPosts();
+    }, [user, session]);
 
     const handleBannerChange = (index) => {
         if (index > currentBanner) {
@@ -284,6 +308,82 @@ export default function LoLMainPage() {
                         </div>
                     </div>
                 </section>
+
+                {/* 내가 작성한 모든 게시글 섹션 */}
+                {(user || session) && allUserPosts.length > 0 && (
+                    <section className="mb-12">
+                        <div className="flex justify-between items-center mb-6">
+                            <h2 className="text-2xl font-bold text-gray-900">
+                                ✍️ 내가 작성한 모든 게시글
+                            </h2>
+                            <Link
+                                href="/mypage"
+                                className="text-blue-600 hover:text-blue-700"
+                            >
+                                더 보기 →
+                            </Link>
+                        </div>
+                        <div className="overflow-x-auto">
+                            <div className="flex gap-4 pb-4">
+                                {allUserPosts.map((post) => (
+                                    <PopularPostCard
+                                        key={`${post.gameType}-${post.id}`}
+                                        post={post}
+                                        gameType={post.gameType}
+                                    />
+                                ))}
+                            </div>
+                        </div>
+                    </section>
+                )}
+
+                {/* 내가 작성한 LoL 글 섹션 */}
+                {(user || session) && userPosts.length > 0 && (
+                    <section className="mb-12">
+                        <div className="flex justify-between items-center mb-6">
+                            <h2 className="text-2xl font-bold text-gray-900">
+                                ⚔️ 내가 작성한 LoL 게시글
+                            </h2>
+                            <Link
+                                href="/lol/community?filter=my"
+                                className="text-blue-600 hover:text-blue-700"
+                            >
+                                더 보기 →
+                            </Link>
+                        </div>
+                        <div className="overflow-x-auto">
+                            <div className="flex gap-4 pb-4">
+                                {userPosts.map((post) => (
+                                    <PopularPostCard
+                                        key={post.id}
+                                        post={post}
+                                        gameType="lol"
+                                    />
+                                ))}
+                            </div>
+                        </div>
+                    </section>
+                )}
+
+                {/* 로그인하지 않은 사용자를 위한 안내 */}
+                {!user && !session && (
+                    <section className="mb-12">
+                        <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg p-8 text-center">
+                            <h2 className="text-xl font-bold text-gray-900 mb-2">
+                                나만의 재판 기록을 남겨보세요!
+                            </h2>
+                            <p className="text-gray-600 mb-4">
+                                로그인하시면 작성한 글들을 여기서 확인할 수 있습니다.
+                            </p>
+                            <Link
+                                href="/login"
+                                className="inline-flex items-center px-6 py-3 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors"
+                            >
+                                로그인하기
+                            </Link>
+                        </div>
+                    </section>
+                )}
             </div>
         </div>
     );

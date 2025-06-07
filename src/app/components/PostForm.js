@@ -20,6 +20,7 @@ export default function PostForm({
 }) {
     const [title, setTitle] = useState(initialData?.title || "");
     const [videoUrl, setVideoUrl] = useState(initialData?.videoUrl || "");
+    const [videoFile, setVideoFile] = useState(null);
     const [selectedTags, setSelectedTags] = useState({
         champions: initialData?.tags?.champions || [],
         lanes: initialData?.tags?.lanes || [],
@@ -28,6 +29,12 @@ export default function PostForm({
         maps: initialData?.tags?.maps || [],
         roles: initialData?.tags?.roles || [],
     });
+
+    // selectedTags 상태 변화 디버깅
+    useEffect(() => {
+        console.log("PostForm - selectedTags 상태 변화:", selectedTags);
+        console.log("PostForm - champions 태그 개수:", selectedTags.champions?.length || 0);
+    }, [selectedTags]);
     const [content, setContent] = useState(initialData?.content || "");
 
     // 투표 설정
@@ -53,7 +60,7 @@ export default function PostForm({
 
     // 발로란트 에이전트 역할군
     const agentRoles =
-        gameType === "valorant"
+        gameType === "valorant" && tagData?.agents
             ? {
                   타격대: tagData.agents
                       .filter((agent) => agent.role === "타격대")
@@ -72,7 +79,7 @@ export default function PostForm({
 
     // 요원의 역할군 찾기
     const getAgentRole = (agentName) => {
-        if (gameType !== "valorant") return null;
+        if (gameType !== "valorant" || !tagData?.agents) return null;
         const agent = tagData.agents.find((a) => a.name === agentName);
         return agent ? agent.role : null;
     };
@@ -82,18 +89,25 @@ export default function PostForm({
     // 수정 모드일 때 초기 데이터 설정
     useEffect(() => {
         if (mode === "edit" && initialData) {
+            console.log("PostForm 초기 데이터 설정:", initialData);
+            console.log("PostForm mode:", mode);
+            console.log("PostForm gameType:", gameType);
+            
             setTitle(initialData.title || "");
             setContent(initialData.content || "");
-            setSelectedTags(
-                initialData.tags || {
-                    champions: [],
-                    lanes: [],
-                    situations: [],
-                    maps: [],
-                    agents: [],
-                    roles: [],
-                }
-            );
+            
+            const tagsToSet = initialData.tags || {
+                champions: [],
+                lanes: [],
+                situations: [],
+                maps: [],
+                agents: [],
+                roles: [],
+            };
+            console.log("PostForm - 설정할 태그들:", tagsToSet);
+            console.log("PostForm - champions 태그:", tagsToSet.champions);
+            setSelectedTags(tagsToSet);
+            
             setVoteOptions(initialData.voteOptions || ["", ""]);
             setAllowNeutral(initialData.allowNeutral || false);
             setVoteDeadline(initialData.voteDeadline || "");
@@ -108,16 +122,16 @@ export default function PostForm({
 
     // 태그 추가
     const addTag = (category, tag) => {
-        if (!selectedTags[category].includes(tag)) {
+        if (!selectedTags[category]?.includes(tag)) {
             setSelectedTags((prev) => {
                 const newTags = { ...prev };
-                newTags[category] = [...prev[category], tag];
+                newTags[category] = [...(prev[category] || []), tag];
 
                 // 요원 선택 시 해당 역할군 자동 추가
                 if (category === "agents" && gameType === "valorant") {
                     const role = getAgentRole(tag);
-                    if (role && !prev.roles.includes(role)) {
-                        newTags.roles = [...prev.roles, role];
+                    if (role && !(prev.roles || []).includes(role)) {
+                        newTags.roles = [...(prev.roles || []), role];
                     }
                 }
 
@@ -136,11 +150,11 @@ export default function PostForm({
             if (category === "agents" && gameType === "valorant") {
                 const role = getAgentRole(tag);
                 if (role) {
-                    const remainingAgentsInRole = newTags.agents.filter(
+                    const remainingAgentsInRole = (newTags.agents || []).filter(
                         (agent) => getAgentRole(agent) === role
                     );
                     if (remainingAgentsInRole.length === 0) {
-                        newTags.roles = prev.roles.filter((r) => r !== role);
+                        newTags.roles = (prev.roles || []).filter((r) => r !== role);
                     }
                 }
             }
@@ -202,12 +216,18 @@ export default function PostForm({
     const handleSubmit = (e) => {
         e.preventDefault();
 
+        // Flatten the tags structure for the service
+        const flatTags = [];
+        Object.values(selectedTags).forEach(tagArray => {
+            flatTags.push(...tagArray);
+        });
+
         const formData = {
             title,
-            videoUrl,
-            selectedTags,
             content,
-            voteType,
+            tags: flatTags,
+            videoFile: videoFile,
+            videoUrl: videoUrl || null,
             voteOptions,
             allowNeutral,
             voteDeadline,
@@ -304,7 +324,10 @@ export default function PostForm({
                                     </div>
                                     <button
                                         type="button"
-                                        onClick={() => setVideoUrl("")}
+                                        onClick={() => {
+                                            setVideoUrl("");
+                                            setVideoFile(null);
+                                        }}
                                         className="text-red-600 hover:text-red-700 text-sm"
                                     >
                                         파일 제거
@@ -329,19 +352,23 @@ export default function PostForm({
                                         MP4, AVI, MOV 파일 지원 (최대 100MB)
                                     </p>
                                     <input
-                                        type="url"
-                                        value={videoUrl}
-                                        onChange={(e) =>
-                                            setVideoUrl(e.target.value)
-                                        }
+                                        type="file"
+                                        accept="video/*"
+                                        onChange={(e) => {
+                                            const file = e.target.files[0];
+                                            if (file) {
+                                                setVideoFile(file);
+                                                setVideoUrl(file.name);
+                                            }
+                                        }}
                                         className="hidden"
-                                        id="video-url"
+                                        id="video-file"
                                     />
                                     <label
-                                        htmlFor="video-url"
+                                        htmlFor="video-file"
                                         className={`bg-${gameColor}-500 hover:bg-${gameColor}-600 text-white px-6 py-2 rounded-lg cursor-pointer transition-colors`}
                                     >
-                                        동영상 URL 선택
+                                        동영상 파일 선택
                                     </label>
                                 </div>
                             )}
@@ -366,34 +393,48 @@ export default function PostForm({
                                     </h3>
 
                                     {/* 선택된 챔피언 태그 표시 */}
-                                    {selectedTags.champions.length > 0 && (
-                                        <div className="flex flex-wrap gap-2 mb-3">
-                                            {selectedTags.champions.map(
-                                                (tag) => (
-                                                    <span
-                                                        key={`champions-${tag}`}
-                                                        className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm cursor-pointer"
-                                                        onClick={() =>
-                                                            removeTag(
-                                                                "champions",
-                                                                tag
-                                                            )
-                                                        }
-                                                    >
-                                                        {tag}
-                                                        <button
-                                                            type="button"
-                                                            className="ml-2 text-current hover:text-red-600"
+                                    <div className="mb-4">
+                                        <h4 className="text-sm font-medium text-gray-700 mb-2">
+                                            선택된 챔피언 (디버그: {(selectedTags.champions || []).length}개)
+                                        </h4>
+                                        {(selectedTags.champions || []).length > 0 ? (
+                                            <div className="flex flex-wrap gap-2 p-3 bg-blue-50 rounded-lg border border-blue-200">
+                                                {(selectedTags.champions || []).map(
+                                                    (tag) => (
+                                                        <span
+                                                            key={`champions-${tag}`}
+                                                            className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm cursor-pointer hover:bg-blue-200 transition-colors"
+                                                            onClick={() =>
+                                                                removeTag(
+                                                                    "champions",
+                                                                    tag
+                                                                )
+                                                            }
                                                         >
-                                                            ×
-                                                        </button>
-                                                    </span>
-                                                )
-                                            )}
-                                        </div>
-                                    )}
+                                                            {tag}
+                                                            <button
+                                                                type="button"
+                                                                className="ml-2 text-current hover:text-red-600 font-bold"
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    removeTag("champions", tag);
+                                                                }}
+                                                            >
+                                                                ×
+                                                            </button>
+                                                        </span>
+                                                    )
+                                                )}
+                                            </div>
+                                        ) : (
+                                            <div className="p-3 bg-gray-50 rounded-lg border border-gray-200 text-gray-500 text-sm">
+                                                선택된 챔피언이 없습니다. (디버그: {JSON.stringify(selectedTags.champions)})
+                                            </div>
+                                        )}
+                                    </div>
 
                                     <div className="mb-3">
+                                        <h4 className="text-sm font-medium text-gray-700 mb-2">챔피언 추가</h4>
                                         <input
                                             type="text"
                                             placeholder="챔피언 이름을 검색하세요..."
@@ -425,11 +466,11 @@ export default function PostForm({
                                                                     tag
                                                                 )
                                                             }
-                                                            disabled={selectedTags.champions.includes(
+                                                            disabled={(selectedTags.champions || []).includes(
                                                                 tag
                                                             )}
                                                             className={`px-2 py-1 text-xs rounded border transition-colors ${
-                                                                selectedTags.champions.includes(
+                                                                (selectedTags.champions || []).includes(
                                                                     tag
                                                                 )
                                                                     ? "bg-blue-200 text-blue-800 border-blue-400 cursor-not-allowed"
@@ -462,7 +503,7 @@ export default function PostForm({
                                                 key={tag}
                                                 type="button"
                                                 onClick={() =>
-                                                    selectedTags.lanes.includes(
+                                                    (selectedTags.lanes || []).includes(
                                                         tag
                                                     )
                                                         ? removeTag(
@@ -472,7 +513,7 @@ export default function PostForm({
                                                         : addTag("lanes", tag)
                                                 }
                                                 className={`px-3 py-1 text-sm rounded-full border transition-colors ${
-                                                    selectedTags.lanes.includes(
+                                                    (selectedTags.lanes || []).includes(
                                                         tag
                                                     )
                                                         ? "bg-green-100 text-green-700 border-green-400 font-medium"
@@ -499,14 +540,14 @@ export default function PostForm({
                                                 key={tag}
                                                 type="button"
                                                 onClick={() =>
-                                                    selectedTags.maps.includes(
+                                                    (selectedTags.maps || []).includes(
                                                         tag
                                                     )
                                                         ? removeTag("maps", tag)
                                                         : addTag("maps", tag)
                                                 }
                                                 className={`px-3 py-1 text-sm rounded-full border transition-colors ${
-                                                    selectedTags.maps.includes(
+                                                    (selectedTags.maps || []).includes(
                                                         tag
                                                     )
                                                         ? "bg-orange-100 text-orange-700 border-orange-400 font-medium"
@@ -527,29 +568,37 @@ export default function PostForm({
                                     </h3>
 
                                     {/* 선택된 요원 태그 표시 */}
-                                    {selectedTags.agents.length > 0 && (
-                                        <div className="flex flex-wrap gap-2 mb-3">
-                                            {selectedTags.agents.map((tag) => (
-                                                <span
-                                                    key={`agents-${tag}`}
-                                                    className="px-3 py-1 bg-red-100 text-red-700 rounded-full text-sm cursor-pointer"
-                                                    onClick={() =>
-                                                        removeTag("agents", tag)
-                                                    }
-                                                >
-                                                    {tag}
-                                                    <button
-                                                        type="button"
-                                                        className="ml-2 text-current hover:text-red-600"
+                                    {(selectedTags.agents || []).length > 0 && (
+                                        <div className="mb-4">
+                                            <h4 className="text-sm font-medium text-gray-700 mb-2">선택된 요원</h4>
+                                            <div className="flex flex-wrap gap-2 p-3 bg-red-50 rounded-lg border border-red-200">
+                                                {(selectedTags.agents || []).map((tag) => (
+                                                    <span
+                                                        key={`agents-${tag}`}
+                                                        className="px-3 py-1 bg-red-100 text-red-700 rounded-full text-sm cursor-pointer hover:bg-red-200 transition-colors"
+                                                        onClick={() =>
+                                                            removeTag("agents", tag)
+                                                        }
                                                     >
-                                                        ×
-                                                    </button>
-                                                </span>
-                                            ))}
+                                                        {tag}
+                                                        <button
+                                                            type="button"
+                                                            className="ml-2 text-current hover:text-red-600 font-bold"
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                removeTag("agents", tag);
+                                                            }}
+                                                        >
+                                                            ×
+                                                        </button>
+                                                    </span>
+                                                ))}
+                                            </div>
                                         </div>
                                     )}
 
                                     <div className="mb-3">
+                                        <h4 className="text-sm font-medium text-gray-700 mb-2">요원 추가</h4>
                                         <input
                                             type="text"
                                             placeholder="요원 이름을 검색하세요..."
@@ -587,11 +636,11 @@ export default function PostForm({
                                                                     agent.name
                                                                 )
                                                             }
-                                                            disabled={selectedTags.agents.includes(
+                                                            disabled={(selectedTags.agents || []).includes(
                                                                 agent.name
                                                             )}
                                                             className={`px-3 py-1 text-sm rounded-full border transition-colors ${
-                                                                selectedTags.agents.includes(
+                                                                (selectedTags.agents || []).includes(
                                                                     agent.name
                                                                 )
                                                                     ? "bg-red-200 text-red-800 border-red-400 cursor-not-allowed"
@@ -625,7 +674,7 @@ export default function PostForm({
                                                 type="button"
                                                 onClick={() => toggleRole(role)}
                                                 className={`px-3 py-1 text-sm rounded-full border transition-colors ${
-                                                    selectedTags.roles.includes(
+                                                    (selectedTags.roles || []).includes(
                                                         role
                                                     )
                                                         ? "bg-red-200 text-red-800 border-red-400"
@@ -652,14 +701,14 @@ export default function PostForm({
                                         key={tag}
                                         type="button"
                                         onClick={() =>
-                                            selectedTags.situations.includes(
+                                            (selectedTags.situations || []).includes(
                                                 tag
                                             )
                                                 ? removeTag("situations", tag)
                                                 : addTag("situations", tag)
                                         }
                                         className={`px-3 py-1 text-sm rounded-full border transition-colors ${
-                                            selectedTags.situations.includes(
+                                            (selectedTags.situations || []).includes(
                                                 tag
                                             )
                                                 ? "bg-purple-100 text-purple-700 border-purple-400 font-medium"
@@ -744,7 +793,7 @@ export default function PostForm({
                                     </div>
                                     {mode !== "edit" && (
                                         <div className="text-xs text-gray-500 text-left mt-2 px-4">
-                                            {voteOptions[0].length}/
+                                            {(voteOptions[0] || "").length}/
                                             {VALIDATION_LIMITS.VOTE_OPTION}자
                                         </div>
                                     )}
@@ -794,7 +843,7 @@ export default function PostForm({
                                     </div>
                                     {mode !== "edit" && (
                                         <div className="text-xs text-gray-500 text-left mt-2 px-4">
-                                            {voteOptions[1].length}/
+                                            {(voteOptions[1] || "").length}/
                                             {VALIDATION_LIMITS.VOTE_OPTION}자
                                         </div>
                                     )}

@@ -3,6 +3,11 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
+import { mentorService } from "@/app/services/mentor/mentor.service";
+import { userService } from "@/app/services/user/user.service";
+import { useAuth } from '@/app/utils/providers';
+import { useSession } from 'next-auth/react';
+import { communityService } from '@/app/services/community/community.service';
 
 const ServiceCard = ({ service, game }) => {
     const gameColor = game === "lol" ? "blue" : "red";
@@ -34,6 +39,11 @@ const ServiceCard = ({ service, game }) => {
 export default function MentorDetailPage() {
     const params = useParams();
     const mentorId = params.id;
+    const { user } = useAuth();
+    const { data: session } = useSession();
+    const [mentor, setMentor] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
     const [activeTab, setActiveTab] = useState("reviews");
     const [showContactModal, setShowContactModal] = useState(false);
     const [showApplyModal, setShowApplyModal] = useState(false);
@@ -42,6 +52,43 @@ export default function MentorDetailPage() {
     const [showReviewModal, setShowReviewModal] = useState(false);
     const [rating, setRating] = useState(0);
     const [hoveredRating, setHoveredRating] = useState(0);
+    const [reviewText, setReviewText] = useState("");
+    const [reviews, setReviews] = useState([]);
+    const [submittingReview, setSubmittingReview] = useState(false);
+    const [selectedService, setSelectedService] = useState("");
+    const [feedbackMessage, setFeedbackMessage] = useState("");
+    const [submittingFeedback, setSubmittingFeedback] = useState(false);
+    const [recentActivities, setRecentActivities] = useState([]);
+
+    // 멘토 데이터 로드 및 찜하기 상태 확인
+    useEffect(() => {
+        const loadMentor = async () => {
+            try {
+                setLoading(true);
+                const mentorData = await mentorService.getMentorById(mentorId);
+                setMentor(mentorData);
+                setError(null);
+                
+                // 로그인한 사용자의 찜하기 상태 확인
+                if (user || session) {
+                    const currentUser = session?.user || user;
+                    const currentUserId = communityService.generateConsistentUserId(currentUser);
+                    console.log('🔍 찜하기 상태 확인:', { currentUser, currentUserId });
+                    const liked = await userService.isLikedMentor(currentUserId, mentorId);
+                    setIsLiked(liked);
+                }
+            } catch (err) {
+                console.error('멘토 정보 로드 실패:', err);
+                setError('멘토 정보를 불러오는데 실패했습니다.');
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        if (mentorId) {
+            loadMentor();
+        }
+    }, [mentorId, user, session]);
 
     // 스낵바 자동 숨김
     useEffect(() => {
@@ -53,15 +100,121 @@ export default function MentorDetailPage() {
         }
     }, [snackbar.show]);
 
+    // 멘토 리뷰 데이터 로드
+    useEffect(() => {
+        const loadReviews = async () => {
+            try {
+                const reviewData = await mentorService.getMentorReviews(mentorId);
+                setReviews(reviewData);
+            } catch (error) {
+                console.error('리뷰 로드 실패:', error);
+                setReviews([]);
+            }
+        };
+
+        if (mentorId) {
+            loadReviews();
+        }
+    }, [mentorId]);
+
+    // 멘토의 최근 활동 로드
+    useEffect(() => {
+        const loadRecentActivities = async () => {
+            if (mentor?.userId) {
+                try {
+                    const activities = await userService.getMentorRecentActivity(mentor.userId, 10);
+                    setRecentActivities(activities);
+                } catch (error) {
+                    console.error('최근 활동 로드 실패:', error);
+                    setRecentActivities([]);
+                }
+            }
+        };
+
+        if (mentor) {
+            loadRecentActivities();
+        }
+    }, [mentor]);
+
     const showSnackbar = (message) => {
         setSnackbar({ show: true, message });
     };
 
-    const handleLike = () => {
-        setIsLiked(!isLiked);
-        showSnackbar(
-            isLiked ? "찜 목록에서 제거되었어요." : "찜 목록에 추가되었어요."
-        );
+    // 피드백 신청 함수
+    const handleFeedbackRequest = async () => {
+        if (!user && !session) {
+            showSnackbar("로그인이 필요합니다.");
+            return;
+        }
+
+        if (!selectedService) {
+            showSnackbar("서비스를 선택해주세요.");
+            return;
+        }
+
+        if (!feedbackMessage.trim()) {
+            showSnackbar("메시지를 입력해주세요.");
+            return;
+        }
+
+        try {
+            setSubmittingFeedback(true);
+            
+            const currentUser = session?.user || user;
+            const serviceInfo = mentor.curriculum?.mentoring_types?.[selectedService];
+            
+            const requestData = {
+                service: selectedService,
+                serviceTitle: {
+                    video_feedback: "영상 피드백",
+                    realtime_onepoint: "실시간 원포인트 피드백",
+                    realtime_private: "실시간 1:1 피드백",
+                }[selectedService] || selectedService,
+                message: feedbackMessage,
+                price: serviceInfo?.price || 0,
+                game: mentor.selectedGame
+            };
+
+            console.log('🔍 피드백 신청:', { mentorId, requestData, currentUser });
+            
+            await mentorService.requestFeedback(mentorId, requestData, currentUser);
+            
+            setShowApplyModal(false);
+            setSelectedService("");
+            setFeedbackMessage("");
+            showSnackbar("피드백 신청이 완료되었습니다!");
+        } catch (error) {
+            console.error('피드백 신청 실패:', error);
+            showSnackbar("피드백 신청에 실패했습니다. 다시 시도해주세요.");
+        } finally {
+            setSubmittingFeedback(false);
+        }
+    };
+
+    const handleLike = async () => {
+        if (!user && !session) {
+            showSnackbar("로그인이 필요합니다.");
+            return;
+        }
+        
+        try {
+            const currentUser = session?.user || user;
+            const currentUserId = communityService.generateConsistentUserId(currentUser);
+            console.log('🔍 찜하기 요청:', { currentUser, currentUserId, isLiked });
+            
+            if (isLiked) {
+                await userService.removeLikedMentor(currentUserId, mentorId);
+                setIsLiked(false);
+                showSnackbar("찜 목록에서 제거되었어요.");
+            } else {
+                await userService.addLikedMentor(currentUserId, mentorId);
+                setIsLiked(true);
+                showSnackbar("찜 목록에 추가되었어요.");
+            }
+        } catch (error) {
+            console.error('찜하기 요청 실패:', error);
+            showSnackbar("오류가 발생했습니다. 다시 시도해주세요.");
+        }
     };
 
     const handleShare = () => {
@@ -69,184 +222,86 @@ export default function MentorDetailPage() {
         showSnackbar("링크가 복사되었어요.");
     };
 
-    // 더미 멘토 데이터 (실제로는 API에서 ID로 조회)
-    const mockMentors = {
-        1: {
-            id: 1,
-            nickname: "프로게이머김철수",
-            game: "lol",
-            profileImage: null,
-            rating: 4.8,
-            reviewCount: 127,
-            responseRate: 95,
-            totalAnswers: 234,
-            isVerified: true,
-            // Profile 영역
-            oneLineIntro: "7년 프로게이머 경력의 정글 전문 코치입니다",
-            contact: "discord: kimcs#1234",
-            // Tag 영역
-            gameTag: "LoL",
-            characterTags: ["친절한", "체계적인", "실력향상보장"],
-            championTags: [], // JSON으로 추후 추가
-            lineTags: ["정글"],
-            // Experience 영역
-            experienceType: ["프로게이머", "코치"],
-            experienceDetails: [
-                "LCK 출전 경험 (2017-2022)",
-                "챌린저 달성 5회",
-                "정글 전문 코치 (2022-현재)",
-                "개인 멘토링 200명+ 지도",
-            ],
-            // Curriculum 영역
-            curriculum: {
-                title: "정글 마스터 과정",
-                description: "기초부터 고급까지 체계적인 정글 교육",
-                sessions: [
-                    {
-                        title: "1회차: 정글 기초 이론",
-                        duration: "60분",
-                        content: [
-                            "정글 루트 이해",
-                            "갱킹 기본 원리",
-                            "와드 배치",
-                        ],
-                    },
-                    {
-                        title: "2회차: 실전 갱킹",
-                        duration: "60분",
-                        content: [
-                            "갱킹 타이밍",
-                            "라인 상황 판단",
-                            "카운터 갱킹",
-                        ],
-                    },
-                    {
-                        title: "3회차: 오브젝트 컨트롤",
-                        duration: "60분",
-                        content: [
-                            "드래곤/바론 컨트롤",
-                            "팀파이트 포지셔닝",
-                            "후반 운영",
-                        ],
-                    },
-                ],
-                mentoring_types: {
-                    video_feedback: {
-                        isSelected: true,
-                        price: 10000,
-                    },
-                    realtime_onepoint: {
-                        isSelected: true,
-                        price: 15000,
-                    },
-                    realtime_private: {
-                        isSelected: true,
-                        price: 20000,
-                    },
-                },
-            },
-            // 상세 소개
-            detailedIntroduction:
-                "저는 7년간의 프로게이머 경력을 바탕으로 정글 포지션에서의 전문적인 코칭을 제공합니다.",
-        },
-        2: {
-            id: 2,
-            nickname: "발로마스터",
-            game: "valorant",
-            profileImage: null,
-            rating: 4.6,
-            reviewCount: 89,
-            responseRate: 88,
-            totalAnswers: 156,
-            isVerified: true,
-            oneLineIntro: "레디언트 달성 경험의 에임 전문 코치",
-            contact: "discord: valomaster#5678",
-            gameTag: "VALORANT",
-            characterTags: ["꼼꼼한", "에임향상전문"],
-            championTags: [],
-            lineTags: ["듀얼리스트", "컨트롤러"],
-            experienceType: ["고티어", "스트리머"],
-            experienceDetails: [
-                "레디언트 3회 달성",
-                "발로란트 챔피언스 투어 참가",
-                "트위치 스트리머 (팔로워 5만+)",
-                "에임 트레이닝 전문",
-            ],
-            curriculum: {
-                title: "에임 마스터 과정",
-                description: "체계적인 에임 향상과 게임 센스 개발",
-                sessions: [
-                    {
-                        title: "1회차: 에임 기초",
-                        duration: "60분",
-                        content: [
-                            "마우스 설정",
-                            "크로스헤어 조정",
-                            "기본 에임 연습",
-                        ],
-                    },
-                    {
-                        title: "2회차: 실전 에임",
-                        duration: "60분",
-                        content: [
-                            "피킹 연습",
-                            "리코일 컨트롤",
-                            "움직이며 쏘기",
-                        ],
-                    },
-                ],
-                mentoring_types: {
-                    video_feedback: {
-                        isSelected: true,
-                        price: 10000,
-                    },
-                    realtime_onepoint: {
-                        isSelected: true,
-                        price: 15000,
-                    },
-                    realtime_private: {
-                        isSelected: true,
-                        price: 20000,
-                    },
-                },
-            },
-        },
+    // 리뷰 제출 함수
+    const handleSubmitReview = async () => {
+        if (!user && !session) {
+            showSnackbar("로그인이 필요합니다.");
+            return;
+        }
+
+        if (!rating || !reviewText.trim()) {
+            showSnackbar("별점과 리뷰 내용을 모두 입력해주세요.");
+            return;
+        }
+
+        setSubmittingReview(true);
+        try {
+            const currentUser = session?.user || user;
+            const reviewData = {
+                mentorId: mentorId,
+                rating: rating,
+                comment: reviewText.trim(),
+                reviewerId: currentUser.uid || currentUser.id || currentUser.sub,
+                reviewerName: currentUser.displayName || currentUser.name || currentUser.email || "익명",
+            };
+
+            await mentorService.addMentorReview(reviewData);
+            
+            // 새로운 리뷰를 로컬 상태에 추가
+            const newReview = {
+                ...reviewData,
+                id: Date.now().toString(),
+                createdAt: new Date().toISOString(),
+            };
+            setReviews(prev => [newReview, ...prev]);
+
+            // 모달 닫기 및 상태 초기화
+            setShowReviewModal(false);
+            setRating(0);
+            setHoveredRating(0);
+            setReviewText("");
+            
+            showSnackbar("리뷰가 성공적으로 등록되었습니다!");
+        } catch (error) {
+            console.error('리뷰 제출 실패:', error);
+            showSnackbar("리뷰 등록에 실패했습니다. 다시 시도해주세요.");
+        } finally {
+            setSubmittingReview(false);
+        }
     };
 
-    const mentor = mockMentors[mentorId];
+    // 로딩 상태 처리
+    if (loading) {
+        return (
+            <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+                <div className="text-center">
+                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
+                    <p className="text-gray-600">멘토 정보를 불러오는 중...</p>
+                </div>
+            </div>
+        );
+    }
 
-    // 임시 리뷰 데이터
-    const mockReviews = [
-        {
-            id: 1,
-            userName: "실버탈출가능?",
-            rating: 5,
-            content:
-                "정글링 루트부터 갱킹 타이밍까지 자세히 설명해주셔서 많이 배웠습니다. 특히 오브젝트 우선순위 설정하는 법을 알려주셔서 좋았어요!",
-            createdAt: "2024-03-15",
-            serviceType: "영상 피드백",
-        },
-        {
-            id: 2,
-            userName: "미드장인될래요",
-            rating: 4,
-            content:
-                "친절하게 설명해주시고 실전에서 바로 써먹을 수 있는 팁들을 많이 알려주셨습니다.",
-            createdAt: "2024-03-10",
-            serviceType: "실시간 1:1",
-        },
-    ];
+    // 에러 상태 처리
+    if (error) {
+        return (
+            <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+                <div className="text-center">
+                    <h1 className="text-2xl font-bold text-gray-900 mb-4">
+                        오류가 발생했습니다
+                    </h1>
+                    <p className="text-gray-600 mb-4">{error}</p>
+                    <Link
+                        href="/mentor"
+                        className="text-blue-600 hover:text-blue-700"
+                    >
+                        멘토 목록으로 돌아가기
+                    </Link>
+                </div>
+            </div>
+        );
+    }
 
-    // 임시 받은 피드백 데이터 (리뷰 작성 가능 여부 확인용)
-    const mockReceivedFeedbacks = [
-        {
-            id: 1,
-            status: "completed",
-            hasReview: false,
-            completedAt: "2024-03-20",
-            serviceType: "영상 피드백",
-        },
-    ];
 
     if (!mentor) {
         return (
@@ -334,12 +389,12 @@ export default function MentorDetailPage() {
                                 <div className="flex flex-col items-center">
                                     <div className="relative">
                                         <div className="w-32 h-32 bg-gradient-to-br from-primary-400 to-primary-600 rounded-full flex items-center justify-center text-white font-bold text-4xl">
-                                            {mentor.nickname.charAt(0)}
+                                            {(mentor.nickname || mentor.userName || mentor.name || '멘토').charAt(0)}
                                         </div>
                                         <div className="absolute -bottom-1 -right-1 w-10 h-10 bg-white rounded-full flex items-center justify-center shadow-md">
-                                            {mentor.game === "lol" ? (
+                                            {mentor.selectedGame === "lol" ? (
                                                 <img
-                                                    src="/images/lol-logo.png"
+                                                    src="/logo-lol.svg"
                                                     alt="League of Legends"
                                                     className="w-7 h-7"
                                                     onError={(e) => {
@@ -351,7 +406,7 @@ export default function MentorDetailPage() {
                                                 />
                                             ) : (
                                                 <img
-                                                    src="/images/valorant-logo.png"
+                                                    src="/logo-valorant.svg"
                                                     alt="VALORANT"
                                                     className="w-7 h-7"
                                                     onError={(e) => {
@@ -366,12 +421,12 @@ export default function MentorDetailPage() {
                                                 className="text-xs font-medium text-gray-600"
                                                 style={{ display: "none" }}
                                             >
-                                                {mentor.gameTag}
+                                                {mentor.selectedGame || 'GAME'}
                                             </span>
                                         </div>
                                     </div>
                                     <h1 className="text-xl font-bold text-gray-900 mt-4">
-                                        {mentor.nickname}
+                                        {mentor.nickname || mentor.userName || mentor.name || '멘토'}
                                     </h1>
                                 </div>
 
@@ -382,7 +437,7 @@ export default function MentorDetailPage() {
                                             한줄 소개
                                         </h3>
                                         <p className="text-gray-700 mb-4">
-                                            {mentor.oneLineIntro}
+                                            {mentor.oneLineIntro || '멘토 소개를 준비 중입니다.'}
                                         </p>
                                     </div>
 
@@ -394,7 +449,7 @@ export default function MentorDetailPage() {
                                                 특징
                                             </span>
                                             <div className="inline-flex flex-wrap gap-1">
-                                                {mentor.characterTags.map(
+                                                {(mentor.characterTags || []).map(
                                                     (tag, index) => (
                                                         <span
                                                             key={index}
@@ -403,6 +458,11 @@ export default function MentorDetailPage() {
                                                             {tag}
                                                         </span>
                                                     )
+                                                )}
+                                                {(!mentor.characterTags || mentor.characterTags.length === 0) && (
+                                                    <span className="text-xs text-gray-500">
+                                                        등록된 특징이 없습니다
+                                                    </span>
                                                 )}
                                             </div>
                                         </div>
@@ -413,7 +473,7 @@ export default function MentorDetailPage() {
                                                 라인
                                             </span>
                                             <div className="inline-flex flex-wrap gap-1">
-                                                {mentor.lineTags.map(
+                                                {(mentor.lineTags || []).map(
                                                     (tag, index) => (
                                                         <span
                                                             key={index}
@@ -422,6 +482,11 @@ export default function MentorDetailPage() {
                                                             {tag}
                                                         </span>
                                                     )
+                                                )}
+                                                {(!mentor.lineTags || mentor.lineTags.length === 0) && (
+                                                    <span className="text-xs text-gray-500">
+                                                        등록된 라인이 없습니다
+                                                    </span>
                                                 )}
                                             </div>
                                         </div>
@@ -445,18 +510,18 @@ export default function MentorDetailPage() {
                             <div className="grid grid-cols-3 gap-4 divide-x divide-gray-200">
                                 <div className="text-center">
                                     <div className="flex items-center justify-center mb-1">
-                                        {renderStars(mentor.rating)}
+                                        {renderStars(mentor.rating || 0)}
                                         <span className="ml-1 font-semibold text-gray-900">
-                                            {mentor.rating.toFixed(1)}
+                                            {(mentor.rating || 0).toFixed(1)}
                                         </span>
                                     </div>
                                     <div className="text-sm text-gray-600">
-                                        평점 ({mentor.reviewCount})
+                                        평점 ({mentor.totalReviews || 0})
                                     </div>
                                 </div>
                                 <div className="text-center">
                                     <div className="font-semibold text-gray-900">
-                                        {mentor.responseRate}%
+                                        {mentor.responseRate || 100}%
                                     </div>
                                     <div className="text-sm text-gray-600">
                                         응답률
@@ -464,7 +529,7 @@ export default function MentorDetailPage() {
                                 </div>
                                 <div className="text-center">
                                     <div className="font-semibold text-gray-900">
-                                        {mentor.totalAnswers}
+                                        {mentor.totalFeedbacks || 0}
                                     </div>
                                     <div className="text-sm text-gray-600">
                                         피드백 답변
@@ -474,7 +539,7 @@ export default function MentorDetailPage() {
                         </section>
 
                         {/* 3. Experience 영역 */}
-                        <section className="bg-white rounded-xl border border-gray-200 p-6">
+                        <section id="experience" className="bg-white rounded-xl border border-gray-200 p-6">
                             <h2 className="text-lg font-semibold text-gray-900 mb-4">
                                 경력
                             </h2>
@@ -482,7 +547,7 @@ export default function MentorDetailPage() {
                             {/* 경력 타입 */}
                             <div className="mb-4">
                                 <div className="flex flex-wrap gap-2">
-                                    {mentor.experienceType.map(
+                                    {(mentor.experienceType || []).map(
                                         (type, index) => (
                                             <span
                                                 key={index}
@@ -492,13 +557,18 @@ export default function MentorDetailPage() {
                                             </span>
                                         )
                                     )}
+                                    {(!mentor.experienceType || mentor.experienceType.length === 0) && (
+                                        <span className="text-sm text-gray-500">
+                                            등록된 경력 정보가 없습니다
+                                        </span>
+                                    )}
                                 </div>
                             </div>
 
                             {/* 상세 경력 */}
                             <div>
                                 <ul className="space-y-2">
-                                    {mentor.experienceDetails.map(
+                                    {(mentor.experienceDetails || []).map(
                                         (detail, index) => (
                                             <li
                                                 key={index}
@@ -510,6 +580,11 @@ export default function MentorDetailPage() {
                                                 </span>
                                             </li>
                                         )
+                                    )}
+                                    {(!mentor.experienceDetails || mentor.experienceDetails.length === 0) && (
+                                        <p className="text-sm text-gray-500">
+                                            상세 경력 정보가 등록되지 않았습니다
+                                        </p>
                                     )}
                                 </ul>
                             </div>
@@ -545,10 +620,10 @@ export default function MentorDetailPage() {
                                     },
                                 ].map((service) => {
                                     const serviceData =
-                                        mentor.curriculum.mentoring_types[
+                                        mentor.curriculum?.mentoring_types?.[
                                             service.type
                                         ];
-                                    if (!serviceData.isSelected) return null;
+                                    if (!serviceData?.isSelected) return null;
 
                                     return (
                                         <div
@@ -566,7 +641,7 @@ export default function MentorDetailPage() {
                                                 </div>
                                                 <div className="text-right">
                                                     <div className="text-lg font-bold text-primary-600">
-                                                        {serviceData.price.toLocaleString()}
+                                                        {(serviceData.price || 0).toLocaleString()}
                                                         원
                                                     </div>
                                                     <div className="text-sm text-gray-500">
@@ -576,12 +651,18 @@ export default function MentorDetailPage() {
                                             </div>
                                         </div>
                                     );
-                                })}
+                                }).filter(Boolean)}
+                                {(!mentor.curriculum?.mentoring_types || 
+                                  Object.values(mentor.curriculum.mentoring_types).every(service => !service.isSelected)) && (
+                                    <p className="text-sm text-gray-500 text-center py-4">
+                                        등록된 커리큘럼이 없습니다
+                                    </p>
+                                )}
                             </div>
                         </section>
 
                         {/* 6. 상세 소개 영역 */}
-                        <section className="bg-white rounded-xl border border-gray-200 p-6">
+                        <section id="introduction" className="bg-white rounded-xl border border-gray-200 p-6">
                             <h2 className="text-lg font-semibold text-gray-900 mb-4">
                                 상세 소개
                             </h2>
@@ -592,7 +673,7 @@ export default function MentorDetailPage() {
                         </section>
 
                         {/* 5. 탭 영역 */}
-                        <section className="bg-white rounded-xl border border-gray-200">
+                        <section id="reviews" className="bg-white rounded-xl border border-gray-200">
                             {/* 탭 헤더 */}
                             <div className="border-b border-gray-200">
                                 <nav className="grid grid-cols-2">
@@ -621,56 +702,21 @@ export default function MentorDetailPage() {
                             <div className="p-6">
                                 {activeTab === "reviews" && (
                                     <div className="space-y-6">
-                                        {/* 리뷰 작성 가능한 경우 표시 */}
-                                        {mockReceivedFeedbacks
-                                            .filter(
-                                                (feedback) =>
-                                                    feedback.status ===
-                                                        "completed" &&
-                                                    !feedback.hasReview
-                                            )
-                                            .map((feedback) => (
-                                                <div
-                                                    key={feedback.id}
-                                                    className="bg-blue-50 border border-blue-200 rounded-lg p-4"
+                                        {/* 리뷰 작성 버튼 */}
+                                        {(user || session) && (
+                                            <div className="flex justify-end">
+                                                <button
+                                                    onClick={() => setShowReviewModal(true)}
+                                                    className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-medium transition-colors"
                                                 >
-                                                    <div className="flex justify-between items-center">
-                                                        <div>
-                                                            <h3 className="text-sm font-medium text-blue-900">
-                                                                피드백을
-                                                                받으셨네요!
-                                                                멘토님의
-                                                                피드백은
-                                                                어떠셨나요?
-                                                            </h3>
-                                                            <p className="text-sm text-blue-700 mt-1">
-                                                                {
-                                                                    feedback.serviceType
-                                                                }{" "}
-                                                                ·{" "}
-                                                                {
-                                                                    feedback.completedAt
-                                                                }{" "}
-                                                                완료
-                                                            </p>
-                                                        </div>
-                                                        <button
-                                                            onClick={() =>
-                                                                setShowReviewModal(
-                                                                    true
-                                                                )
-                                                            }
-                                                            className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
-                                                        >
-                                                            리뷰 작성하기
-                                                        </button>
-                                                    </div>
-                                                </div>
-                                            ))}
+                                                    리뷰 작성하기
+                                                </button>
+                                            </div>
+                                        )}
 
                                         {/* 리뷰 목록 */}
                                         <div className="space-y-4">
-                                            {mockReviews.map((review) => (
+                                            {reviews.map((review) => (
                                                 <div
                                                     key={review.id}
                                                     className="border border-gray-200 rounded-lg p-4"
@@ -680,7 +726,7 @@ export default function MentorDetailPage() {
                                                             <div className="flex items-center gap-2">
                                                                 <span className="font-medium text-gray-900">
                                                                     {
-                                                                        review.userName
+                                                                        review.reviewerName || review.userName
                                                                     }
                                                                 </span>
                                                                 <span className="text-sm text-gray-500">
@@ -719,7 +765,7 @@ export default function MentorDetailPage() {
                                                         </span>
                                                     </div>
                                                     <p className="text-gray-700">
-                                                        {review.content}
+                                                        {review.comment || review.content}
                                                     </p>
                                                 </div>
                                             ))}
@@ -727,8 +773,112 @@ export default function MentorDetailPage() {
                                     </div>
                                 )}
                                 {activeTab === "activity" && (
-                                    <div className="text-center py-8 text-gray-500">
-                                        최근 활동 내용이 여기에 표시됩니다
+                                    <div className="space-y-4">
+                                        {recentActivities.length === 0 ? (
+                                            <div className="text-center py-8 text-gray-500">
+                                                최근 활동이 없습니다
+                                            </div>
+                                        ) : (
+                                            recentActivities.map((activity) => (
+                                                <div
+                                                    key={`${activity.type}_${activity.id}`}
+                                                    className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors"
+                                                >
+                                                    <div className="flex items-start space-x-3">
+                                                        {/* 활동 타입 아이콘 */}
+                                                        <div className="flex-shrink-0 mt-1">
+                                                            {activity.type === 'post' ? (
+                                                                <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
+                                                                    <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                                                    </svg>
+                                                                </div>
+                                                            ) : (
+                                                                <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center">
+                                                                    <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                                                                    </svg>
+                                                                </div>
+                                                            )}
+                                                        </div>
+
+                                                        {/* 활동 내용 */}
+                                                        <div className="flex-1 min-w-0">
+                                                            <div className="flex items-center space-x-2 mb-1">
+                                                                <span className="text-sm font-medium text-gray-900">
+                                                                    {activity.type === 'post' ? '게시글 작성' : '댓글 작성'}
+                                                                </span>
+                                                                <span className={`px-2 py-1 text-xs rounded-full ${
+                                                                    activity.gameType === 'lol' 
+                                                                        ? 'bg-blue-100 text-blue-700' 
+                                                                        : 'bg-red-100 text-red-700'
+                                                                }`}>
+                                                                    {activity.gameType === 'lol' ? 'LoL' : 'VALORANT'}
+                                                                </span>
+                                                                <span className="text-sm text-gray-500">
+                                                                    {activity.createdAt.toLocaleDateString('ko-KR')}
+                                                                </span>
+                                                            </div>
+                                                            
+                                                            {activity.type === 'post' ? (
+                                                                <div>
+                                                                    <Link 
+                                                                        href={`/${activity.gameType}/community/post/${activity.id}`}
+                                                                        className="font-medium text-gray-900 hover:text-blue-600 transition-colors block mb-1"
+                                                                    >
+                                                                        {activity.title}
+                                                                    </Link>
+                                                                    <p className="text-sm text-gray-600 mb-2">
+                                                                        {activity.content}
+                                                                    </p>
+                                                                    <div className="flex items-center space-x-4 text-xs text-gray-500">
+                                                                        <span className="flex items-center">
+                                                                            <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
+                                                                            </svg>
+                                                                            {activity.likes}
+                                                                        </span>
+                                                                        <span className="flex items-center">
+                                                                            <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                                                                            </svg>
+                                                                            {activity.commentCount}
+                                                                        </span>
+                                                                        <span className="flex items-center">
+                                                                            <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                                                            </svg>
+                                                                            {activity.views}
+                                                                        </span>
+                                                                    </div>
+                                                                </div>
+                                                            ) : (
+                                                                <div>
+                                                                    <Link 
+                                                                        href={`/${activity.gameType}/community/post/${activity.postId}`}
+                                                                        className="text-sm text-gray-600 hover:text-blue-600 transition-colors block mb-1"
+                                                                    >
+                                                                        {activity.postTitle}에 댓글 작성
+                                                                    </Link>
+                                                                    <p className="text-sm text-gray-700 mb-2">
+                                                                        {activity.content}
+                                                                    </p>
+                                                                    <div className="flex items-center space-x-4 text-xs text-gray-500">
+                                                                        <span className="flex items-center">
+                                                                            <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
+                                                                            </svg>
+                                                                            {activity.likes}
+                                                                        </span>
+                                                                    </div>
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            ))
+                                        )}
                                     </div>
                                 )}
                             </div>
@@ -744,7 +894,7 @@ export default function MentorDetailPage() {
                                     <button
                                         onClick={() => setShowApplyModal(true)}
                                         className={`w-full ${
-                                            mentor.game === "lol"
+                                            mentor.selectedGame === "lol"
                                                 ? "bg-blue-500 hover:bg-blue-600"
                                                 : "bg-red-500 hover:bg-red-600"
                                         } text-white py-3 rounded-lg font-medium transition-colors`}
@@ -867,13 +1017,13 @@ export default function MentorDetailPage() {
                         <div className="mb-6">
                             <p className="text-gray-700 mb-2">
                                 <span className="font-medium">
-                                    {mentor.nickname}
+                                    {mentor.nickname || mentor.userName || mentor.name || '멘토'}
                                 </span>
                                 님의 연락처
                             </p>
                             <div className="bg-gray-50 p-3 rounded-lg">
                                 <p className="text-gray-900 font-mono">
-                                    {mentor.contact}
+                                    {mentor.contact || '연락처가 등록되지 않았습니다'}
                                 </p>
                             </div>
                         </div>
@@ -881,7 +1031,7 @@ export default function MentorDetailPage() {
                             <button
                                 onClick={() =>
                                     navigator.clipboard.writeText(
-                                        mentor.contact
+                                        mentor.contact || ''
                                     )
                                 }
                                 className="flex-1 bg-primary-500 hover:bg-primary-600 text-white py-2 rounded-lg font-medium transition-colors"
@@ -931,14 +1081,18 @@ export default function MentorDetailPage() {
                                 <label className="block text-sm font-medium text-gray-700 mb-1">
                                     신청할 서비스
                                 </label>
-                                <select className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500">
+                                <select 
+                                    value={selectedService}
+                                    onChange={(e) => setSelectedService(e.target.value)}
+                                    className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                                >
                                     <option value="">
                                         서비스를 선택해주세요
                                     </option>
                                     {Object.entries(
-                                        mentor.curriculum.mentoring_types
+                                        mentor.curriculum?.mentoring_types || {}
                                     ).map(([type, data]) => {
-                                        if (!data.isSelected) return null;
+                                        if (!data?.isSelected) return null;
                                         const serviceTitle = {
                                             video_feedback: "영상 피드백",
                                             realtime_onepoint:
@@ -949,7 +1103,7 @@ export default function MentorDetailPage() {
                                         return (
                                             <option key={type} value={type}>
                                                 {serviceTitle} (
-                                                {data.price.toLocaleString()}원)
+                                                {(data.price || 0).toLocaleString()}원)
                                             </option>
                                         );
                                     })}
@@ -960,6 +1114,8 @@ export default function MentorDetailPage() {
                                     메시지
                                 </label>
                                 <textarea
+                                    value={feedbackMessage}
+                                    onChange={(e) => setFeedbackMessage(e.target.value)}
                                     className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 min-h-[100px]"
                                     placeholder="멘토에게 전달할 메시지를 입력해주세요"
                                 />
@@ -967,18 +1123,15 @@ export default function MentorDetailPage() {
                         </div>
                         <div className="flex space-x-3 mt-6">
                             <button
-                                onClick={() => {
-                                    /* TODO: 신청 로직 구현 */
-                                    setShowApplyModal(false);
-                                    showSnackbar("신청이 완료되었습니다");
-                                }}
+                                onClick={handleFeedbackRequest}
+                                disabled={submittingFeedback}
                                 className={`flex-1 ${
-                                    mentor.game === "lol"
+                                    mentor.selectedGame === "lol"
                                         ? "bg-blue-500 hover:bg-blue-600"
                                         : "bg-red-500 hover:bg-red-600"
-                                } text-white py-2 rounded-lg font-medium transition-colors`}
+                                } text-white py-2 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed`}
                             >
-                                신청하기
+                                {submittingFeedback ? "신청 중..." : "신청하기"}
                             </button>
                             <button
                                 onClick={() => setShowApplyModal(false)}
@@ -1065,6 +1218,8 @@ export default function MentorDetailPage() {
                                     상세한 리뷰를 작성해주세요
                                 </label>
                                 <textarea
+                                    value={reviewText}
+                                    onChange={(e) => setReviewText(e.target.value)}
                                     className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary-500 min-h-[120px]"
                                     placeholder="멘토님의 피드백이 어떤 점에서 도움이 되었나요?"
                                 />
@@ -1077,22 +1232,19 @@ export default function MentorDetailPage() {
                                     setShowReviewModal(false);
                                     setRating(0);
                                     setHoveredRating(0);
+                                    setReviewText("");
                                 }}
                                 className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 font-medium"
+                                disabled={submittingReview}
                             >
                                 취소
                             </button>
                             <button
-                                onClick={() => {
-                                    // TODO: 리뷰 제출 로직 구현
-                                    setShowReviewModal(false);
-                                    setRating(0);
-                                    setHoveredRating(0);
-                                }}
-                                className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-medium"
-                                disabled={!rating}
+                                onClick={handleSubmitReview}
+                                className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                                disabled={!rating || !reviewText.trim() || submittingReview}
                             >
-                                리뷰 등록
+                                {submittingReview ? "등록 중..." : "리뷰 등록"}
                             </button>
                         </div>
                     </div>

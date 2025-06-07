@@ -32,18 +32,17 @@ export default function Login() {
     const handleSubmit = async (e) => {
         e.preventDefault();
         try {
-            const response = await axios.post(
-                `${process.env.DEPLOY_PATH}/api/auth/login`,
-                formData
-            );
+            const response = await axios.post('/api/auth/login', formData);
             if (response.status === 200) {
-                router.push("/");
+                // 로그인 성공 후 페이지 새로고침하여 세션 상태 갱신
+                window.location.href = "/";
             }
         } catch (error) {
             console.error("로그인 실패:", error);
+            const errorMessage = error.response?.data?.error || "이메일 또는 비밀번호가 올바르지 않습니다.";
             setErrors({
-                email: "이메일 또는 비밀번호가 올바르지 않습니다.",
-                password: "이메일 또는 비밀번호가 올바르지 않습니다.",
+                email: errorMessage,
+                password: "",
             });
         }
     };
